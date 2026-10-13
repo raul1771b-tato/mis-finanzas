@@ -1,4 +1,4 @@
-const CACHE='mis-finanzas-static-v2';
+const CACHE='mis-finanzas-static-v3';
 const FILES=['./','./index.html','./style.css','./core.js','./app.js','./manifest.webmanifest','./icon-192.png','./icon-512.png'];
 self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(FILES))));
 self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k.startsWith('mis-finanzas-static-')&&k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));

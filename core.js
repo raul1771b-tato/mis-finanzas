@@ -11,19 +11,24 @@ function cents(value){
  if(n<=0||n>max) throw Error('El importe debe ser mayor a cero.'); return n;
 }
 function dateOK(s){ if(typeof s!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(s))return false;const d=new Date(s+'T12:00:00Z');return !isNaN(d)&&d.toISOString().slice(0,10)===s; }
-function fresh(){return {version:1,currency:'USD',transactions:[],budgets:{},goal:0,initialBalance:0};}
+function fresh(){return {version:2,accounts:[{id:'usd',name:'Cuenta USD',currency:'USD',initialBalance:0},{id:'mxn',name:'Cuenta MXN',currency:'MXN',initialBalance:0}],transactions:[],plans:{USD:{budgets:{},goal:0},MXN:{budgets:{},goal:0}}};}
+function amountOK(n,negative=false){return Number.isSafeInteger(n)&&Math.abs(n)<=max&&(negative||n>=0);}
 function validate(s){
- if(!s||s.version!==1||!['USD','MXN'].includes(s.currency)||!Array.isArray(s.transactions)||s.transactions.length>50000)throw Error('Respaldo incompatible.');
- if(!s.budgets||typeof s.budgets!=='object'||Array.isArray(s.budgets)||!Number.isSafeInteger(s.goal)||s.goal<0||s.goal>max)throw Error('Configuración inválida.');
- const initialBalance=s.initialBalance===undefined?0:s.initialBalance;
- if(!Number.isSafeInteger(initialBalance)||Math.abs(initialBalance)>max)throw Error('Saldo inicial inválido.');
- const ids=new Set();
- const transactions=s.transactions.map(t=>{
- if(!t||typeof t.id!=='string'||!t.id||t.id.length>100||ids.has(t.id)||!dateOK(t.date)||!['income','expense'].includes(t.type)||!Number.isSafeInteger(t.amount)||t.amount<=0||t.amount>max||!(t.type==='income'?incomeCategories.includes(t.category):categories.includes(t.category))||typeof t.note!=='string'||t.note.length>120)throw Error('Movimiento inválido en el respaldo.');
- ids.add(t.id);return {id:t.id,date:t.date,type:t.type,amount:t.amount,category:t.category,note:t.note};});
- const budgets={};for(const [k,v] of Object.entries(s.budgets)){if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(k)||!Number.isSafeInteger(v)||v<0||v>max)throw Error('Presupuesto inválido.');budgets[k]=v;}
- return {version:1,currency:s.currency,transactions,budgets,goal:s.goal,initialBalance};
+ if(s&&s.version===1){
+  if(!['USD','MXN'].includes(s.currency))throw Error('Moneda inválida.');
+  const plans={USD:{budgets:{},goal:0},MXN:{budgets:{},goal:0}};plans[s.currency]={budgets:s.budgets,goal:s.goal};
+  s={version:2,accounts:[{id:'legacy',name:'Cuenta principal '+s.currency,currency:s.currency,initialBalance:s.initialBalance===undefined?0:s.initialBalance}],transactions:Array.isArray(s.transactions)?s.transactions.map(t=>({...t,accountId:'legacy'})):s.transactions,plans};
+ }
+ if(!s||s.version!==2||!Array.isArray(s.accounts)||!s.accounts.length||s.accounts.length>100||!Array.isArray(s.transactions)||s.transactions.length>50000)throw Error('Respaldo incompatible.');
+ const ids=new Set();const accounts=s.accounts.map(x=>{if(!x||typeof x.id!=='string'||!x.id||x.id.length>100||x.id==='all'||ids.has(x.id)||typeof x.name!=='string'||!x.name.trim()||x.name.length>50||!['USD','MXN'].includes(x.currency)||!amountOK(x.initialBalance,true))throw Error('Cuenta inválida.');ids.add(x.id);return {id:x.id,name:x.name.trim(),currency:x.currency,initialBalance:x.initialBalance};});
+ const txIds=new Set();const transactions=s.transactions.map(t=>{
+  if(!t||typeof t.id!=='string'||!t.id||t.id.length>100||txIds.has(t.id)||!ids.has(t.accountId)||!dateOK(t.date)||!['income','expense'].includes(t.type)||!amountOK(t.amount)||t.amount===0||!(t.type==='income'?incomeCategories.includes(t.category):categories.includes(t.category))||typeof t.note!=='string'||t.note.length>120)throw Error('Movimiento inválido en el respaldo.');
+  txIds.add(t.id);return {id:t.id,accountId:t.accountId,date:t.date,type:t.type,amount:t.amount,category:t.category,note:t.note};
+ });
+ const plans={};for(const currency of ['USD','MXN']){const v=s.plans&&s.plans[currency];if(!v||!v.budgets||typeof v.budgets!=='object'||Array.isArray(v.budgets)||!amountOK(v.goal))throw Error('Plan inválido.');const budgets={};for(const [month,n] of Object.entries(v.budgets)){if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)||!amountOK(n))throw Error('Presupuesto inválido.');budgets[month]=n;}plans[currency]={budgets,goal:v.goal};}
+ return {version:2,accounts,transactions,plans};
 }
+function migrate(s){return validate(s);}
 function range(mode,date){
  if(!dateOK(date))throw Error('Fecha inválida.');
  const d=new Date(date+'T12:00:00Z');let start=date,end=date;
@@ -33,16 +38,17 @@ function range(mode,date){
  return {start,end};
 }
 function shift(mode,date,step){const d=new Date(date+'T12:00:00Z');if(mode==='month'){d.setUTCDate(1);d.setUTCMonth(d.getUTCMonth()+step);}else d.setUTCDate(d.getUTCDate()+step*(mode==='week'?7:1));return d.toISOString().slice(0,10);}
-function summary(s,period,end){
+function summary(s,period,end,currency="USD",accountId="all"){
+ s=migrate(s);const accounts=s.accounts.filter(x=>x.currency===currency&&(accountId==="all"||x.id===accountId));const ids=new Set(accounts.map(x=>x.id));const transactions=s.transactions.filter(t=>ids.has(t.accountId));
  const start=end?period:period+'-01';end=end||range('month',start).end;
- const list=s.transactions.filter(t=>t.date>=start&&t.date<=end);
+ const list=transactions.filter(t=>t.date>=start&&t.date<=end);
  const income=list.filter(t=>t.type==='income').reduce((a,t)=>a+t.amount,0),expense=list.filter(t=>t.type==='expense').reduce((a,t)=>a+t.amount,0);
  const byCategory=categories.map(category=>({category,amount:list.filter(t=>t.type==='expense'&&t.category===category).reduce((a,t)=>a+t.amount,0)})).filter(x=>x.amount>0).sort((a,b)=>b.amount-a.amount);
  const byIncomeCategory=incomeCategories.map(category=>({category,amount:list.filter(t=>t.type==='income'&&t.category===category).reduce((a,t)=>a+t.amount,0)})).filter(x=>x.amount>0).sort((a,b)=>b.amount-a.amount);
- const opening=(s.initialBalance||0)+s.transactions.filter(t=>t.date<start).reduce((a,t)=>a+(t.type==='income'?t.amount:-t.amount),0);
+ const opening=accounts.reduce((a,x)=>a+x.initialBalance,0)+transactions.filter(t=>t.date<start).reduce((a,t)=>a+(t.type==='income'?t.amount:-t.amount),0);
  const grouped={};for(const t of list){if(!grouped[t.date])grouped[t.date]={date:t.date,income:0,expense:0};grouped[t.date][t.type==='income'?'income':'expense']+=t.amount;}
  let balance=opening;const days=[];for(const day of Object.values(grouped).sort((a,b)=>a.date.localeCompare(b.date))){balance+=day.income-day.expense;days.push({...day,net:day.income-day.expense,closing:balance});}
  return {list,income,expense,balance:income-expense,opening,closing:opening+income-expense,byCategory,byIncomeCategory,days};
 }
-const api={categories,incomeCategories,cents,dateOK,fresh,validate,summary,range,shift};if(typeof module!=='undefined')module.exports=api;else root.Finance=api;
+const api={categories,incomeCategories,cents,dateOK,fresh,validate:migrate,summary,range,shift};if(typeof module!=='undefined')module.exports=api;else root.Finance=api;
 })(globalThis);
